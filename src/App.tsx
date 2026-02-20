@@ -19,6 +19,11 @@ interface xAPIConfig {
   enabled: boolean;
 }
 
+interface LocalTelemetryRecord {
+  recordedAt: string;
+  statement: any;
+}
+
 interface AILog {
   tool: string;
   goal: string;
@@ -110,6 +115,17 @@ class xAPI {
       ...(score !== undefined && { result: { score: { raw: score, min: 0, max: 100 } } })
     };
 
+    // Always store a local telemetry record for export.
+    try {
+      const key = 'oecd_telemetry';
+      const existing = localStorage.getItem(key);
+      const parsed: LocalTelemetryRecord[] = existing ? JSON.parse(existing) : [];
+      parsed.push({ recordedAt: new Date().toISOString(), statement });
+      localStorage.setItem(key, JSON.stringify(parsed));
+    } catch (e) {
+      console.warn('[Local Telemetry] Unable to write telemetry record', e);
+    }
+
     if (config.enabled && config.endpoint) {
       console.log("[xAPI Real Mode - Emitting Statement]", statement);
     } else {
@@ -150,6 +166,50 @@ export default function App() {
 
   const totalCompleted = Object.values(progress).filter(p => p.completed).length;
 
+  const exportLocalState = () => {
+    const telemetryRaw = localStorage.getItem('oecd_telemetry');
+    const telemetry = telemetryRaw ? JSON.parse(telemetryRaw) : [];
+    const payload = {
+      schema: 'oecd-explorer-export',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      user,
+      progress,
+      submissions,
+      xApiConfig,
+      telemetry
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `oecd-explorer-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const importLocalState = async (file: File) => {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+
+    // Minimal schema check
+    if (!parsed || parsed.schema !== 'oecd-explorer-export') {
+      alert('That file does not look like an OECD Explorer export.');
+      return;
+    }
+
+    if (parsed.user) setUser(parsed.user);
+    if (parsed.progress) setProgress(parsed.progress);
+    if (parsed.submissions) setSubmissions(parsed.submissions);
+    if (parsed.xApiConfig) setXApiConfig(parsed.xApiConfig);
+    if (Array.isArray(parsed.telemetry)) localStorage.setItem('oecd_telemetry', JSON.stringify(parsed.telemetry));
+
+    setRoute(parsed.user ? 'dashboard' : 'onboard');
+  };
+
   const renderRoute = () => {
     if (route === 'onboard') return <Onboarding setUser={setUser} setRoute={setRoute} xApiConfig={xApiConfig} />;
     if (route === 'dashboard') return <Dashboard progress={progress} setRoute={setRoute} setActiveChapter={setActiveChapter} />;
@@ -173,7 +233,7 @@ export default function App() {
         xApiConfig={xApiConfig}
       />;
     }
-    if (route === 'portfolio') return <Portfolio submissions={submissions} setRoute={setRoute} />;
+    if (route === 'portfolio') return <Portfolio submissions={submissions} setRoute={setRoute} onExport={exportLocalState} onImport={importLocalState} />;
     if (route === 'certificate') return <Certificate user={user} totalCompleted={totalCompleted} setRoute={setRoute} />;
     if (route === 'settings') return <SettingsPage config={xApiConfig} setConfig={setXApiConfig} setRoute={setRoute} />;
     if (route === 'admin') return <AdminNewsletter submissions={submissions} setRoute={setRoute} />;
@@ -911,16 +971,48 @@ function StepPublish({ chapter, onComplete, onPrev }: { chapter: Chapter, onComp
 
 // --- PORTFOLIO ---
 
-function Portfolio({ submissions, setRoute }: any) {
+function Portfolio({ submissions, setRoute, onExport, onImport }: any) {
   const allSubs = Object.values(submissions) as Submission[];
+  const [importing, setImporting] = useState(false);
 
   return (
     <div className="space-y-8 pb-12">
       <div className="flex items-center justify-between">
         <h2 className="text-3xl font-bold text-white">Your Portfolio</h2>
-        <button className="bg-[#1a0208] border border-rose-900/50 hover:bg-rose-900/30 text-white px-6 py-2 rounded-lg transition-colors">
-          Export JSON
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={onExport} className="bg-[#1a0208] border border-rose-900/50 hover:bg-rose-900/30 text-white px-6 py-2 rounded-lg transition-colors">
+            Export JSON
+          </button>
+
+          <div className="relative">
+            <input
+              type="file"
+              accept="application/json"
+              className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+              onClick={() => setImporting(true)}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                try {
+                  await onImport(f);
+                } catch (err) {
+                  console.error(err);
+                  alert('Import failed. Make sure the JSON file is a valid OECD Explorer export.');
+                } finally {
+                  setImporting(false);
+                  // allow re-importing the same file
+                  e.currentTarget.value = '';
+                }
+              }}
+            />
+            <button
+              className="bg-rose-900/20 border border-rose-700 hover:bg-rose-900/35 text-rose-200 px-6 py-2 rounded-lg transition-colors"
+              disabled={importing}
+            >
+              {importing ? 'Importing…' : 'Import JSON'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {allSubs.length === 0 ? (

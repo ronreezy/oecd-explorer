@@ -2,6 +2,11 @@
   "name": "faculty-front-page-telemetry",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "npm@9.9.3",
+  "engines": {
+    "node": "20.x",
+    "npm": "9.x"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
